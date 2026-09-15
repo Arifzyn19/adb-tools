@@ -7,7 +7,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tauri::State;
 
-fn client_or_err(state: &State<AppState>) -> Result<AdbClient, String> {
+async fn client_or_err(state: &State<'_, AppState>) -> Result<AdbClient, String> {
     if AppState::mock_mode() {
         return Err("MOCK_MODE".to_string());
     }
@@ -61,7 +61,7 @@ pub async fn adb_set_path(path: String, state: State<'_, AppState>) -> Result<Ad
 
 #[tauri::command]
 pub async fn adb_test(state: State<'_, AppState>) -> Result<String, String> {
-    let c = client_or_err(&state).map_err(|e| if e == "MOCK_MODE" { "mock-ok".to_string() } else { e })?;
+    let c = client_or_err(&state).await.map_err(|e| if e == "MOCK_MODE" { "mock-ok".to_string() } else { e })?;
     c.version().await.map_err(|e| e.to_string())
 }
 
@@ -70,7 +70,7 @@ pub async fn list_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>,
     if AppState::mock_mode() {
         return Ok(mock_devices());
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     let mut devices = c.devices().await.map_err(|e| e.to_string())?;
     for d in devices.iter_mut() {
         let _ = c.enrich_device(d).await;
@@ -83,7 +83,7 @@ pub async fn device_details(serial: String, state: State<'_, AppState>) -> Resul
     if AppState::mock_mode() {
         return mock_devices().into_iter().find(|d| d.serial == serial).ok_or_else(|| "device not found".to_string());
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     let mut devices = c.devices().await.map_err(|e| e.to_string())?;
     let mut found = devices.into_iter().find(|d| d.serial == serial).ok_or_else(|| "device not found".to_string())?;
     c.enrich_device(&mut found).await.map_err(|e| e.to_string())?;
@@ -95,7 +95,7 @@ pub async fn pair_device(host: String, port: u16, code: String, state: State<'_,
     if AppState::mock_mode() {
         return Ok(format!("Successfully paired to {host}:{port} (mock)"));
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     c.pair(&host, port, &code).await.map_err(|e| e.to_string())
 }
 
@@ -104,7 +104,7 @@ pub async fn connect_device(host: String, port: u16, state: State<'_, AppState>)
     if AppState::mock_mode() {
         return Ok(format!("already connected to {host}:{port} (mock)"));
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     c.connect(&host, port).await.map_err(|e| e.to_string())
 }
 
@@ -113,7 +113,7 @@ pub async fn disconnect_device(serial: String, state: State<'_, AppState>) -> Re
     if AppState::mock_mode() {
         return Ok("disconnected (mock)".to_string());
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     c.disconnect(&serial).await.map_err(|e| e.to_string())
 }
 
@@ -122,7 +122,7 @@ pub async fn list_apps(serial: String, state: State<'_, AppState>) -> Result<Vec
     if AppState::mock_mode() {
         return Ok(mock_apps());
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     let pkgs = c.list_packages(&serial).await.map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for pkg in pkgs.into_iter().take(400) {
@@ -154,7 +154,7 @@ pub async fn app_action(serial: String, package: String, action: String, state: 
     if AppState::mock_mode() {
         return Ok(format!("{action} ok (mock)"));
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     match action.as_str() {
         "launch" => c.launch(&serial, &package).await.map_err(|e| e.to_string()),
         "force-stop" => c.force_stop(&serial, &package).await.map(|_| "Force stopped".into()).map_err(|e| e.to_string()),
@@ -169,7 +169,7 @@ pub async fn list_processes(serial: String, state: State<'_, AppState>) -> Resul
     if AppState::mock_mode() {
         return Ok(mock_processes());
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     c.list_processes(&serial).await.map_err(|e| e.to_string())
 }
 
@@ -178,7 +178,7 @@ pub async fn kill_process(serial: String, pid: u32, package: Option<String>, sta
     if AppState::mock_mode() {
         return Ok("killed (mock)".into());
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     if let Some(pkg) = package {
         if !pkg.is_empty() {
             return c.force_stop(&serial, &pkg).await.map(|_| "Force stopped".into()).map_err(|e| e.to_string());
@@ -192,7 +192,7 @@ pub async fn shell_exec(serial: String, line: String, state: State<'_, AppState>
     if AppState::mock_mode() {
         return Ok(ExecOut { stdout: format!("mock output for: {line}\n"), stderr: String::new(), code: Some(0) });
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     c.shell_exec(&serial, &line).await.map(|r| ExecOut { stdout: r.stdout, stderr: r.stderr, code: r.code }).map_err(|e| e.to_string())
 }
 
@@ -208,7 +208,7 @@ pub async fn battery_info(serial: String, state: State<'_, AppState>) -> Result<
     if AppState::mock_mode() {
         return Ok(BatteryInfo { pct: Some(78), charging: Some(true), health: Some("Good".into()), temperature_c: Some(31.0), voltage_mv: Some(4100), technology: Some("Li-ion".into()) });
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     c.battery(&serial).await.map_err(|e| e.to_string())
 }
 
@@ -217,7 +217,7 @@ pub async fn memory_info(serial: String, state: State<'_, AppState>) -> Result<M
     if AppState::mock_mode() {
         return Ok(MemoryInfo { total_kb: Some(11560104), avail_kb: Some(7654321) });
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     c.meminfo(&serial).await.map_err(|e| e.to_string())
 }
 
@@ -226,7 +226,7 @@ pub async fn storage_info(serial: String, path: String, state: State<'_, AppStat
     if AppState::mock_mode() {
         return Ok(StorageInfo { total_kb: Some(118000000), used_kb: Some(84000000), avail_kb: Some(34000000), path });
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     let p = if path.is_empty() { "/data" } else { &path };
     c.storage(&serial, p).await.map_err(|e| e.to_string())
 }
@@ -239,7 +239,7 @@ pub async fn list_files(serial: String, path: String, state: State<'_, AppState>
             FileEntry { name: "photo.jpg".into(), path: format!("{path}/photo.jpg"), is_dir: false, size: 2411723, modified: Some("2024-05-02 12:30".into()) },
         ]);
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     let p = if path.is_empty() { "/storage/emulated/0" } else { &path };
     c.list_files(&serial, p).await.map_err(|e| e.to_string())
 }
@@ -250,7 +250,7 @@ pub async fn screenshot(serial: String, state: State<'_, AppState>) -> Result<St
     if AppState::mock_mode() {
         return Ok(String::new());
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     let bytes = c.screenshot_raw(&serial).await.map_err(|e| e.to_string())?;
     Ok(base64_encode(&bytes))
 }
@@ -276,7 +276,7 @@ pub async fn reboot_device(serial: String, mode: String, state: State<'_, AppSta
     if AppState::mock_mode() {
         return Ok("rebooting (mock)".into());
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     c.reboot(&serial, &mode).await.map(|_| "Reboot command sent".into()).map_err(|e| e.to_string())
 }
 
@@ -285,7 +285,7 @@ pub async fn install_apk(serial: String, path: String, reinstall: bool, state: S
     if AppState::mock_mode() {
         return Ok("Success (mock)".into());
     }
-    let c = client_or_err(&state)?;
+    let c = client_or_err(&state).await?;
     c.install(&serial, &PathBuf::from(path), reinstall).await.map_err(|e| e.to_string())
 }
 
