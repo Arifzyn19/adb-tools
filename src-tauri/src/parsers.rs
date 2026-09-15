@@ -194,15 +194,20 @@ pub fn parse_df(output: &str, path: &str) -> StorageInfo {
 /// Parse one logcat `threadtime` line:
 /// `09-15 20:42:31.123  1234  5678 I ActivityManager: Start proc ...`
 pub fn parse_logcat_threadtime(line: &str) -> Option<LogEntry> {
-    // Regex-free fast path: split into date, time, pid, tid, level, tag: msg
-    let mut parts = line.splitn(6, ' ');
-    let _date = parts.next()?;
-    let time = parts.next()?;
-    let pid_s = parts.next()?.trim();
-    let _tid_s = parts.next()?.trim();
-    let level_s = parts.next()?.trim();
-    let rest = parts.next()?;
-    if time.len() < 8 || level_s.len() != 1 {
+    // threadtime fields are separated by variable whitespace, so consume
+    // the first 5 tokens (date, time, pid, tid, level) then keep the rest.
+    let mut head = line;
+    let mut tokens: Vec<&str> = Vec::with_capacity(5);
+    for _ in 0..5 {
+        head = head.trim_start();
+        let end = head.find(char::is_whitespace)?;
+        tokens.push(&head[..end]);
+        head = &head[end..];
+    }
+    let (_date, time_full, pid_s, _tid, level_s) =
+        (tokens[0], tokens[1], tokens[2], tokens[3], tokens[4]);
+    let rest = head.trim_start();
+    if time_full.len() < 8 || level_s.len() != 1 {
         return None;
     }
     let level = LogLevel::from_char(level_s.chars().next()?)?;
@@ -212,7 +217,7 @@ pub fn parse_logcat_threadtime(line: &str) -> Option<LogEntry> {
     let pid = pid_s.parse().ok();
     Some(LogEntry {
         id: String::new(),
-        timestamp: time[..8].to_string(),
+        timestamp: time_full[..8].to_string(),
         level,
         tag,
         pid,
