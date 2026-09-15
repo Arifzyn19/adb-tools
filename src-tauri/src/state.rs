@@ -2,7 +2,7 @@
 
 use crate::adb_types::*;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 
 pub struct AppState {

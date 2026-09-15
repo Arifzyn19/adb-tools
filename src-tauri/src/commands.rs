@@ -11,7 +11,7 @@ fn client_or_err(state: &State<AppState>) -> Result<AdbClient, String> {
     if AppState::mock_mode() {
         return Err("MOCK_MODE".to_string());
     }
-    let guard = state.adb_path.lock().map_err(|e| e.to_string())?;
+    let guard = state.adb_path.lock().await;
     match guard.clone() {
         Some(p) => Ok(AdbClient::new(p)),
         None => Err("ADB executable not configured. Set it in Settings.".to_string()),
@@ -23,13 +23,13 @@ pub async fn adb_status(state: State<'_, AppState>) -> Result<AdbStatus, String>
     if AppState::mock_mode() {
         return Ok(AdbStatus { ready: true, version: Some("1.0.41 (mock)".into()), path: Some("mock/adb".into()), mock: true });
     }
-    let guard = state.adb_path.lock().map_err(|e| e.to_string())?;
+    let guard = state.adb_path.lock().await;
     match guard.clone() {
         Some(p) => {
             let c = AdbClient::new(p.clone());
             match c.version().await {
                 Ok(v) => Ok(AdbStatus { ready: true, version: Some(v), path: Some(p.to_string_lossy().to_string()), mock: false }),
-                Err(e) => Ok(AdbStatus { ready: false, version: None, path: Some(p.to_string_lossy().to_string()), mock: false }),
+                Err(_) => Ok(AdbStatus { ready: false, version: None, path: Some(p.to_string_lossy().to_string()), mock: false }),
             }
         }
         None => Ok(AdbStatus { ready: false, version: None, path: None, mock: false }),
@@ -40,7 +40,7 @@ pub async fn adb_status(state: State<'_, AppState>) -> Result<AdbStatus, String>
 pub async fn adb_detect(state: State<'_, AppState>) -> Result<AdbStatus, String> {
     let found = discover_adb(None);
     {
-        let mut guard = state.adb_path.lock().map_err(|e| e.to_string())?;
+        let mut guard = state.adb_path.lock().await;
         *guard = found.clone();
     }
     adb_status(state).await
@@ -53,7 +53,7 @@ pub async fn adb_set_path(path: String, state: State<'_, AppState>) -> Result<Ad
     }
     let pb = PathBuf::from(&path);
     {
-        let mut guard = state.adb_path.lock().map_err(|e| e.to_string())?;
+        let mut guard = state.adb_path.lock().await;
         *guard = Some(pb);
     }
     adb_status(state).await
@@ -304,7 +304,7 @@ pub async fn inspect_apk(path: String) -> Result<ApkMeta, String> {
             names.push(f.name().to_string());
         }
     }
-    let has_manifest = names.iter().any(|n| n == "AndroidManifest.xml");
+    let _has_manifest = names.iter().any(|n| n == "AndroidManifest.xml");
     Ok(ApkMeta {
         file_name: pb.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
         size_bytes: size,
@@ -334,7 +334,7 @@ fn detect_abis(names: &[String]) -> Vec<String> {
 }
 
 #[tauri::command]
-pub async fn saved_devices_load(state: State<'_, AppState>) -> Result<Vec<SavedDevice>, String> {
+pub async fn saved_devices_load(_state: State<'_, AppState>) -> Result<Vec<SavedDevice>, String> {
     let path = crate::adb_client::config_dir().join("devices.json");
     if !path.exists() {
         return Ok(Vec::new());

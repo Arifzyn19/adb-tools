@@ -306,7 +306,7 @@ impl AdbClient {
     }
 
     pub async fn pair(&self, host: &str, port: u16, code: &str) -> Result<String> {
-        parsers::validate_host_port(host, port).map_err(anyhow::anyhow::Error::msg)?;
+        parsers::validate_host_port(host, port).map_err(anyhow::Error::msg)?;
         if code.is_empty() || code.len() > 64 || !code.chars().all(|c| c.is_ascii_alphanumeric()) {
             anyhow::bail!("invalid pairing code");
         }
@@ -321,7 +321,7 @@ impl AdbClient {
     }
 
     pub async fn connect(&self, host: &str, port: u16) -> Result<String> {
-        parsers::validate_host_port(host, port).map_err(anyhow::anyhow::Error::msg)?;
+        parsers::validate_host_port(host, port).map_err(anyhow::Error::msg)?;
         let addr = format!("{host}:{port}");
         let r = self.run(&["connect", &addr], 20).await?;
         let combined = format!("{}{}", r.stdout, r.stderr);
