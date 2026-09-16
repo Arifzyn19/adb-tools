@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import jsQR from "jsqr";
+import QRCode from "qrcode";
 import { useDevices, useUi } from "../stores/stores";
 import { api } from "../lib/tauri";
 import { StatusBadge } from "./ui";
@@ -203,92 +203,95 @@ export function ConnectModal() {
 }
 
 function QrScan({ onDone, onError }: { onDone: (msg: string) => void; onError: (msg: string) => void }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [img, setImg] = useState<string>("");
+  const [status, setStatus] = useState("Generating QR code…");
   const [err, setErr] = useState<string | null>(null);
-  const [status, setStatus] = useState("Starting camera…");
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    let stream: MediaStream | null = null;
-    let raf = 0;
     let alive = true;
-    let working = false;
-    let last = 0;
-    const canvas = document.createElement("canvas");
-
+    let tries = 0;
+    let t: ReturnType<typeof setInterval> | undefined;
     (async () => {
       try {
-        if (!navigator.mediaDevices?.getUserMedia) {
-          throw new Error("no camera API");
-        }
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment", width: { ideal: 1280 } },
-          audio: false,
-        });
-        const v = videoRef.current;
-        if (!v) return;
-        v.srcObject = stream;
-        await v.play();
+        const s = await api.qrPairStart();
         if (!alive) return;
-        setStatus("Point the camera at the QR code on your phone…");
-        const loop = async (t: number) => {
-          if (!alive) return;
-          if (t - last > 300 && v.videoWidth > 0 && !working) {
-            last = t;
-            canvas.width = v.videoWidth;
-            canvas.height = v.videoHeight;
-            const ctx = canvas.getContext("2d", { willReadFrequently: true });
-            if (ctx) {
-              ctx.drawImage(v, 0, 0);
-              const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-              const code = jsQR(img.data, canvas.width, canvas.height);
-              if (code?.data) {
-                working = true;
-                setStatus("QR found — pairing…");
-                try {
-                  const msg = await api.pairQr(code.data);
-                  onDone(msg);
-                  return;
-                } catch (e) {
-                  const m = e instanceof Error ? e.message : String(e);
-                  setErr(m);
-                  onError(`QR pairing failed: ${m}`);
-                  working = false;
-                }
-              }
+        setImg(await QRCode.toDataURL(s.payload, { width: 280, margin: 2 }));
+        if (!alive) return;
+        setStatus("Scan this QR with your phone…");
+        t = setInterval(async () => {
+          tries++;
+          try {
+            const r = await api.qrPairPoll();
+            if (!alive) return;
+            if (r.paired) {
+              if (t) clearInterval(t);
+              onDone(r.message);
+              return;
+            }
+            setStatus(r.message);
+          } catch (e) {
+            if (t) clearInterval(t);
+            if (!alive) return;
+            const m = e instanceof Error ? e.message : String(e);
+            setErr(m);
+            onError(m);
+            return;
+          }
+          if (tries >= 48) {
+            if (t) clearInterval(t);
+            if (alive) {
+              setErr("Timed out waiting for scan.");
+              onError("QR pairing timed out.");
             }
           }
-          raf = requestAnimationFrame(loop);
-        };
-        raf = requestAnimationFrame(loop);
-      } catch {
-        setErr("Camera unavailable — allow camera access, or use the pairing code instead.");
-        setStatus("Camera unavailable.");
+        }, 2500);
+      } catch (e) {
+        if (!alive) return;
+        const m = e instanceof Error ? e.message : String(e);
+        setErr(m);
+        setStatus("Failed to start QR pairing.");
       }
     })();
-
     return () => {
       alive = false;
-      cancelAnimationFrame(raf);
-      stream?.getTracks().forEach((t) => t.stop());
+      if (t) clearInterval(t);
+      api.qrPairCancel().catch(() => undefined);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [attempt]);
 
   return (
-    <div className="mt-3 flex flex-col gap-2">
-      <div className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+    <div className="mt-3 flex flex-col gap-2 items-center">
+      <div className="text-[12px] self-start" style={{ color: "var(--text-secondary)" }}>
         On your phone: Settings → Developer options → Wireless debugging →{" "}
-        <b>Pair device with QR code</b>. Keep phone and laptop on the same Wi-Fi.
+        <b>Pair device with QR code</b>, then scan this code. Keep both on the same Wi-Fi.
       </div>
-      <div className="rounded-[8px] overflow-hidden border" style={{ borderColor: "var(--border)", background: "#000" }}>
-        <video ref={videoRef} muted playsInline className="w-full max-h-[260px] object-cover" />
+      <div className="rounded-[8px] overflow-hidden border p-3 bg-white">
+        {img ? (
+          <img src={img} alt="Pairing QR code" width={240} height={240} />
+        ) : (
+          <div className="w-[240px] h-[240px] flex items-center justify-center text-[12px]" style={{ color: "#666" }}>
+            {err ?? "…"}
+          </div>
+        )}
       </div>
-      <div className="text-[11.5px]" style={{ color: err ? "var(--error)" : "var(--text-muted)" }}>
+      <div className="text-[11.5px] text-center" style={{ color: err ? "var(--error)" : "var(--text-muted)" }}>
         {err ?? status}
       </div>
-      <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-        Camera frames are decoded locally — nothing is uploaded.
-      </div>
+      {err && (
+        <button
+          className="btn"
+          onClick={() => {
+            setErr(null);
+            setImg("");
+            setStatus("Generating QR code…");
+            setAttempt((a) => a + 1);
+          }}
+        >
+          Try again
+        </button>
+      )}
     </div>
   );
 }

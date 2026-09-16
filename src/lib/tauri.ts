@@ -93,8 +93,14 @@ export const api = {
   async pair(host: string, port: number, code: string): Promise<string> {
     return invokeTauri<string>("pair_device", { host, port, code });
   },
-  async pairQr(payload: string): Promise<string> {
-    return invokeTauri<string>("pair_qr", { payload });
+  async qrPairStart(): Promise<{ payload: string; service: string; code: string }> {
+    return invokeTauri("qr_pair_start");
+  },
+  async qrPairPoll(): Promise<{ paired: boolean; connected: boolean; message: string }> {
+    return invokeTauri("qr_pair_poll");
+  },
+  async qrPairCancel(): Promise<void> {
+    await invokeTauri("qr_pair_cancel");
   },
   async connect(host: string, port: number): Promise<string> {
     return invokeTauri<string>("connect_device", { host, port });

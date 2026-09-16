@@ -85,9 +85,87 @@ pub async fn pair_device(host: String, port: u16, code: String, state: State<'_,
 }
 
 #[tauri::command]
-pub async fn pair_qr(payload: String, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn pair_qr_start(state: State<'_, AppState>) -> Result<QrPayload, String> {
     let c = client_or_err(&state).await?;
-    c.pair_qr(&payload).await.map_err(|e| e.to_string())
+    // Make sure the adb server (and its mDNS backend) is up before we
+    // show a QR the phone is supposed to trigger discovery against.
+    c.mdns_services().await.map_err(|e| format!("adb mDNS check failed: {e}"))?;
+    let (service, code) = random_qr_secret();
+    let payload = crate::parsers::qr_payload(&service, &code);
+    *state.qr_pending.lock().await = Some(crate::state::QrPending { service: service.clone(), code: code.clone() });
+    Ok(QrPayload { payload, service, code })
+}
+
+#[tauri::command]
+pub async fn pair_qr_poll(state: State<'_, AppState>) -> Result<QrPollResult, String> {
+    let c = client_or_err(&state).await?;
+    let pending = state.qr_pending.lock().await.clone();
+    let Some(p) = pending else {
+        return Err("No QR pairing session. Start again.".to_string());
+    };
+    let services = c.mdns_services().await.map_err(|e| e.to_string())?;
+    let found = services.pairing.iter().find(|(name, _, _)| name == &p.service);
+    let Some((_, ip, port)) = found else {
+        return Ok(QrPollResult { paired: false, connected: false, message: "Waiting for the phone to scan…".to_string() });
+    };
+    let ip = ip.clone();
+    let port = *port;
+    let pair_out = c.pair(&ip, port, &p.code).await.map_err(|e| e.to_string())?;
+    // Pairing port != connection port: connect via the connect service.
+    let services = c.mdns_services().await.map_err(|e| e.to_string())?;
+    let mut notes = vec![pair_out.trim().to_string()];
+    let mut connected = false;
+    for (_, cip, cport) in &services.connect {
+        match c.connect(cip, *cport).await {
+            Ok(msg) => {
+                notes.push(msg.trim().to_string());
+                connected = true;
+                break;
+            }
+            Err(e) => notes.push(format!("connect {cip}:{cport} failed: {e}")),
+        }
+    }
+    if !connected {
+        notes.push("Paired but not connected yet — adb usually auto-connects in a few seconds, or connect manually.".to_string());
+    }
+    *state.qr_pending.lock().await = None;
+    Ok(QrPollResult { paired: true, connected, message: notes.join("\n") })
+}
+
+#[tauri::command]
+pub async fn pair_qr_cancel(state: State<'_, AppState>) -> Result<(), String> {
+    *state.qr_pending.lock().await = None;
+    Ok(())
+}
+
+/// Random `studio-<10>` service name + 10-digit pairing secret (QR pairing
+/// uses a 10-digit secret; manual pairing uses 6).
+fn random_qr_secret() -> (String, String) {
+    let hex = uuid::Uuid::new_v4().simple().to_string();
+    let service = format!("studio-{}", &hex[..10]);
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    let mut code = String::with_capacity(10);
+    for b in bytes {
+        code.push((b'0' + (b % 10)) as char);
+        if code.len() == 10 {
+            break;
+        }
+    }
+    (service, code)
+}
+
+#[derive(serde::Serialize)]
+pub struct QrPayload {
+    pub payload: String,
+    pub service: String,
+    pub code: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct QrPollResult {
+    pub paired: bool,
+    pub connected: bool,
+    pub message: String,
 }
 
 #[tauri::command]

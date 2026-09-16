@@ -328,44 +328,13 @@ impl AdbClient {
         }
     }
 
-    /// Full QR flow: decode was done client-side; here resolve the pairing
-    /// service over mDNS, pair, then auto-connect via the connect service
-    /// (the connection port differs from the pairing port).
-    pub async fn pair_qr(&self, payload: &str) -> Result<String> {
-        let (service, password) =
-            parsers::parse_wifi_qr(payload).map_err(anyhow::anyhow::Error::msg)?;
-        if password.is_empty()
-            || password.len() > 128
-            || password.chars().any(|c| c.is_whitespace() || c.is_control())
-        {
-            anyhow::bail!("invalid pairing password in QR");
-        }
-        let (ip, port) = resolve_mdns_service(&service, "_adb-tls-pairing._tcp.local.", 15).await?;
-        parsers::validate_host_port(&ip, port).map_err(anyhow::Error::msg)?;
-        let addr = format!("{ip}:{port}");
-        let r = self.run(&["pair", &addr, &password], 30).await?;
-        let combined = format!("{}{}", r.stdout, r.stderr);
-        if !parsers::parse_pair_result(&combined) {
-            anyhow::bail!("pairing failed: {}", short_err(&combined));
-        }
-        // Pairing port != connection port: discover the connect service and
-        // connect automatically. Best effort — report honestly on failure.
-        match resolve_mdns_any("_adb-tls-connect._tcp.local.", 10).await {
-            Ok(addrs) if !addrs.is_empty() => {
-                let mut notes = vec![combined.trim().to_string()];
-                for (cip, cport) in addrs {
-                    match self.connect(&cip, cport).await {
-                        Ok(msg) => notes.push(msg.trim().to_string()),
-                        Err(e) => notes.push(format!("connect {cip}:{cport} failed: {e}")),
-                    }
-                }
-                Ok(notes.join("\n"))
-            }
-            _ => Ok(format!(
-                "{}\nPaired. No connect service found — connect manually: adb connect <ip>:<port>",
-                combined.trim()
-            )),
-        }
+    /// Ask the adb server which mDNS services it currently sees.
+    /// Output looks like:
+    ///   List of discovered mdns services
+    ///   adb-XYZ._adb-tls-pairing._tcp<TAB>192.168.1.10:37845
+    pub async fn mdns_services(&self) -> Result<parsers::MdnsServices> {
+        let r = self.run(&["mdns", "services"], 15).await?;
+        Ok(parsers::parse_mdns_services(&r.stdout))
     }
 
     pub async fn connect(&self, host: &str, port: u16) -> Result<String> {
@@ -435,78 +404,6 @@ impl AdbClient {
         }
         self.shell(serial, &parts, 30).await
     }
-}
-
-/// Resolve one mDNS service instance (e.g. the ADB pairing service named
-/// in the phone's QR code) to (ip, port). Phone and laptop must share Wi-Fi.
-async fn resolve_mdns_service(instance: &str, service_type: &str, timeout_secs: u64) -> Result<(String, u16)> {
-    let want = instance.to_string();
-    let stype = service_type.to_string();
-    tokio::task::spawn_blocking(move || {
-        use std::time::{Duration, Instant};
-        let mdns = mdns_sd::ServiceDaemon::new().map_err(|e| anyhow::anyhow!("mDNS failed: {e}"))?;
-        let rx = mdns.browse(&stype).map_err(|e| anyhow::anyhow!("mDNS browse failed: {e}"))?;
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-        let mut seen = 0u32;
-        while Instant::now() < deadline {
-            match rx.recv_timeout(Duration::from_secs(2)) {
-                Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => {
-                    seen += 1;
-                    let name = info.get_fullname().split('.').next().unwrap_or("");
-                    if name == want {
-                        let ip = info
-                            .get_addresses()
-                            .iter()
-                            .find(|a| a.is_ipv4())
-                            .or_else(|| info.get_addresses().iter().next())
-                            .ok_or_else(|| anyhow::anyhow!("pairing service has no address"))?
-                            .to_string();
-                        return Ok((ip, info.get_port()));
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => {}
-            }
-        }
-        anyhow::bail!(
-            "Pairing service '{want}' not found on this network ({seen} service(s) seen). Put the phone and laptop on the same Wi-Fi and keep the QR screen open."
-        )
-    })
-    .await?
-}
-
-/// Collect all currently visible instances of an mDNS service type
-/// (used for the ADB connect service after pairing).
-async fn resolve_mdns_any(service_type: &str, timeout_secs: u64) -> Result<Vec<(String, u16)>> {
-    let stype = service_type.to_string();
-    tokio::task::spawn_blocking(move || {
-        use std::time::{Duration, Instant};
-        let mdns = mdns_sd::ServiceDaemon::new().map_err(|e| anyhow::anyhow!("mDNS failed: {e}"))?;
-        let rx = mdns.browse(&stype).map_err(|e| anyhow::anyhow!("mDNS browse failed: {e}"))?;
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-        let mut out: Vec<(String, u16)> = Vec::new();
-        while Instant::now() < deadline {
-            match rx.recv_timeout(Duration::from_secs(2)) {
-                Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => {
-                    if let Some(ip) = info
-                        .get_addresses()
-                        .iter()
-                        .find(|a| a.is_ipv4())
-                        .or_else(|| info.get_addresses().iter().next())
-                    {
-                        let entry = (ip.to_string(), info.get_port());
-                        if !out.contains(&entry) {
-                            out.push(entry);
-                        }
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => {}
-            }
-        }
-        Ok(out)
-    })
-    .await?
 }
 
 /// Discover adb executable: configured path -> PATH -> common SDK locations.

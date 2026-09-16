@@ -265,53 +265,61 @@ pub fn parse_pair_result(output: &str) -> bool {
     lower.contains("successfully paired") || lower.contains("successfully")
 }
 
-/// Split on `delim` unless escaped with a backslash.
-fn split_unescaped(s: &str, delim: char) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut cur = String::new();
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(n) = chars.next() {
-                cur.push(n);
-            }
-        } else if c == delim {
-            parts.push(std::mem::take(&mut cur));
-        } else {
-            cur.push(c);
-        }
-    }
-    parts.push(cur);
-    parts
+/// Build the QR payload WE display for the phone to scan:
+/// `WIFI:T:ADB;S:<service>;P:<code>;;`
+/// The phone starts a pairing server with the requested instance name;
+/// we then discover it via `adb mdns services` and pair.
+pub fn qr_payload(service: &str, code: &str) -> String {
+    format!("WIFI:T:ADB;S:{service};P:{code};;")
 }
 
-/// Parse Android Wireless Debugging QR payload:
-/// `WIFI:T:ADB;S:<service>;P:<password>;;`
-/// Returns (service_name, password). The IP/port is NOT in the QR —
-/// it must be resolved via mDNS (`_adb-tls-pairing._tcp`).
-pub fn parse_wifi_qr(payload: &str) -> Result<(String, String), String> {
-    let body = payload.trim().strip_prefix("WIFI:").ok_or("Not a Wi-Fi QR code")?.to_string();
-    let mut t: Option<String> = None;
-    let mut svc: Option<String> = None;
-    let mut pass: Option<String> = None;
-    for field in split_unescaped(&body, ';') {
-        if field.is_empty() {
+/// mDNS services as seen by the adb server.
+#[derive(Debug, Default)]
+pub struct MdnsServices {
+    /// (instance, ip, port) for `_adb-tls-pairing._tcp`
+    pub pairing: Vec<(String, String, u16)>,
+    /// (instance, ip, port) for `_adb-tls-connect._tcp`
+    pub connect: Vec<(String, String, u16)>,
+}
+
+/// Parse `adb mdns services` output. Lines look like:
+///   List of discovered mdns services
+///   studio-abc._adb-tls-pairing._tcp   192.168.1.10:37845
+/// Lenient: skips anything unparseable.
+pub fn parse_mdns_services(output: &str) -> MdnsServices {
+    let mut out = MdnsServices::default();
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("List of") || line.starts_with('*') {
             continue;
         }
-        let Some((k, v)) = field.split_once(':') else { continue };
-        match k {
-            "T" => t = Some(v.to_string()),
-            "S" => svc = Some(v.to_string()),
-            "P" => pass = Some(v.to_string()),
-            _ => {}
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 2 {
+            continue;
+        }
+        let instance_full = cols[0];
+        let addr = cols[cols.len() - 1];
+        let Some((ip, port_s)) = addr.rsplit_once(':') else { continue };
+        let Ok(port) = port_s.parse::<u16>() else { continue };
+        if ip.is_empty() || port == 0 {
+            continue;
+        }
+        let instance = instance_full.split('.').next().unwrap_or("").to_string();
+        if instance.is_empty() {
+            continue;
+        }
+        let entry = (instance, ip.to_string(), port);
+        if instance_full.contains("_adb-tls-pairing") {
+            if !out.pairing.contains(&entry) {
+                out.pairing.push(entry);
+            }
+        } else if instance_full.contains("_adb-tls-connect") {
+            if !out.connect.contains(&entry) {
+                out.connect.push(entry);
+            }
         }
     }
-    if t.as_deref() != Some("ADB") {
-        return Err("QR is not an ADB pairing code (T must be ADB)".to_string());
-    }
-    let svc = svc.filter(|v| !v.is_empty()).ok_or("QR is missing the service name (S)".to_string())?;
-    let pass = pass.filter(|v| !v.is_empty()).ok_or("QR is missing the pairing password (P)".to_string())?;
-    Ok((svc, pass))
+    out
 }
 
 /// Validate IPv4/host + port user input (no injection: strict charset).
@@ -466,24 +474,27 @@ mod tests {
     }
 
     #[test]
-    fn wifi_qr_basic() {
-        let (svc, pass) = parse_wifi_qr("WIFI:T:ADB;S:adb-54EFAB12;P:482917;;").unwrap();
-        assert_eq!(svc, "adb-54EFAB12");
-        assert_eq!(pass, "482917");
+    fn qr_payload_format() {
+        assert_eq!(
+            qr_payload("studio-abc123", "4829170354"),
+            "WIFI:T:ADB;S:studio-abc123;P:4829170354;;"
+        );
     }
 
     #[test]
-    fn wifi_qr_escaped() {
-        let (svc, pass) = parse_wifi_qr("WIFI:T:ADB;S:adb\\;X;P:12\\:34;;").unwrap();
-        assert_eq!(svc, "adb;X");
-        assert_eq!(pass, "12:34");
+    fn mdns_services_parse() {
+        let out = "List of discovered mdns services\nstudio-abc._adb-tls-pairing._tcp\t192.168.1.10:37845\nadb-XYZ._adb-tls-connect._tcp  192.168.1.10:5555\nnoise line\n";
+        let s = parse_mdns_services(out);
+        assert_eq!(s.pairing.len(), 1);
+        assert_eq!(s.pairing[0], ("studio-abc".to_string(), "192.168.1.10".to_string(), 37845));
+        assert_eq!(s.connect.len(), 1);
+        assert_eq!(s.connect[0].2, 5555);
     }
 
     #[test]
-    fn wifi_qr_rejects_non_adb() {
-        assert!(parse_wifi_qr("WIFI:T:WPA;S:home;P:secret;;").is_err());
-        assert!(parse_wifi_qr("WIFI:T:ADB;S:only-service;;").is_err());
-        assert!(parse_wifi_qr("hello world").is_err());
+    fn mdns_services_empty() {
+        let s = parse_mdns_services("List of discovered mdns services\n");
+        assert!(s.pairing.is_empty() && s.connect.is_empty());
     }
 
     #[test]
