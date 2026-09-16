@@ -5,9 +5,23 @@ use crate::parsers;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use tokio::process::Command;
 use tracing::{info, warn};
+
+/// Build an adb Command that never flashes a console window on Windows.
+/// All adb spawning in this app must go through here.
+fn adb_command(adb_path: &Path) -> Command {
+    let mut std_cmd = std::process::Command::new(adb_path);
+    std_cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std_cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    Command::from(std_cmd)
+}
 
 #[derive(Debug, Clone)]
 pub struct ExecResult {
@@ -27,11 +41,10 @@ impl AdbClient {
     }
 
     async fn run(&self, args: &[&str], timeout_secs: u64) -> Result<ExecResult> {
-        let mut cmd = Command::new(&self.adb_path);
+        let mut cmd = adb_command(&self.adb_path);
         for a in args {
             cmd.arg(a);
         }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         // Kill on drop to avoid zombies; timeout guards hangs.
         let fut = async {
             let out = cmd.output().await.context("spawn adb")?;
@@ -287,9 +300,8 @@ impl AdbClient {
 
     pub async fn screenshot_raw(&self, serial: &str) -> Result<Vec<u8>> {
         // exec-out avoids newline mangling.
-        let mut cmd = Command::new(&self.adb_path);
+        let mut cmd = adb_command(&self.adb_path);
         cmd.arg("-s").arg(serial).arg("exec-out").arg("screencap").arg("-p");
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output())
             .await
             .map_err(|_| anyhow::anyhow!("screenshot timed out"))?
