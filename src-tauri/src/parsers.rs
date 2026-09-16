@@ -265,6 +265,55 @@ pub fn parse_pair_result(output: &str) -> bool {
     lower.contains("successfully paired") || lower.contains("successfully")
 }
 
+/// Split on `delim` unless escaped with a backslash.
+fn split_unescaped(s: &str, delim: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(n) = chars.next() {
+                cur.push(n);
+            }
+        } else if c == delim {
+            parts.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+    }
+    parts.push(cur);
+    parts
+}
+
+/// Parse Android Wireless Debugging QR payload:
+/// `WIFI:T:ADB;S:<service>;P:<password>;;`
+/// Returns (service_name, password). The IP/port is NOT in the QR —
+/// it must be resolved via mDNS (`_adb-tls-pairing._tcp`).
+pub fn parse_wifi_qr(payload: &str) -> Result<(String, String), String> {
+    let body = payload.trim().strip_prefix("WIFI:").ok_or("Not a Wi-Fi QR code")?.to_string();
+    let mut t: Option<String> = None;
+    let mut svc: Option<String> = None;
+    let mut pass: Option<String> = None;
+    for field in split_unescaped(&body, ';') {
+        if field.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = field.split_once(':') else { continue };
+        match k {
+            "T" => t = Some(v.to_string()),
+            "S" => svc = Some(v.to_string()),
+            "P" => pass = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    if t.as_deref() != Some("ADB") {
+        return Err("QR is not an ADB pairing code (T must be ADB)".to_string());
+    }
+    let svc = svc.filter(|v| !v.is_empty()).ok_or("QR is missing the service name (S)".to_string())?;
+    let pass = pass.filter(|v| !v.is_empty()).ok_or("QR is missing the pairing password (P)".to_string())?;
+    Ok((svc, pass))
+}
+
 /// Validate IPv4/host + port user input (no injection: strict charset).
 pub fn validate_host_port(host: &str, port: u16) -> Result<(), String> {
     if host.is_empty() || host.len() > 255 {
@@ -414,6 +463,27 @@ mod tests {
     fn pair_parse() {
         assert!(parse_pair_result("Successfully paired to 192.168.1.1"));
         assert!(!parse_pair_result("Failed to pair"));
+    }
+
+    #[test]
+    fn wifi_qr_basic() {
+        let (svc, pass) = parse_wifi_qr("WIFI:T:ADB;S:adb-54EFAB12;P:482917;;").unwrap();
+        assert_eq!(svc, "adb-54EFAB12");
+        assert_eq!(pass, "482917");
+    }
+
+    #[test]
+    fn wifi_qr_escaped() {
+        let (svc, pass) = parse_wifi_qr("WIFI:T:ADB;S:adb\\;X;P:12\\:34;;").unwrap();
+        assert_eq!(svc, "adb;X");
+        assert_eq!(pass, "12:34");
+    }
+
+    #[test]
+    fn wifi_qr_rejects_non_adb() {
+        assert!(parse_wifi_qr("WIFI:T:WPA;S:home;P:secret;;").is_err());
+        assert!(parse_wifi_qr("WIFI:T:ADB;S:only-service;;").is_err());
+        assert!(parse_wifi_qr("hello world").is_err());
     }
 
     #[test]

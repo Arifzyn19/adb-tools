@@ -85,6 +85,12 @@ pub async fn pair_device(host: String, port: u16, code: String, state: State<'_,
 }
 
 #[tauri::command]
+pub async fn pair_qr(payload: String, state: State<'_, AppState>) -> Result<String, String> {
+    let c = client_or_err(&state).await?;
+    c.pair_qr(&payload).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn connect_device(host: String, port: u16, state: State<'_, AppState>) -> Result<String, String> {
     let c = client_or_err(&state).await?;
     c.connect(&host, port).await.map_err(|e| e.to_string())

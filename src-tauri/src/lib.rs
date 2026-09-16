@@ -29,6 +29,7 @@ pub fn run() {
             commands::list_devices,
             commands::device_details,
             commands::pair_device,
+            commands::pair_qr,
             commands::connect_device,
             commands::disconnect_device,
             commands::list_apps,

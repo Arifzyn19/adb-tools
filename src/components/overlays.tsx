@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import jsQR from "jsqr";
 import { useDevices, useUi } from "../stores/stores";
 import { api } from "../lib/tauri";
 import { StatusBadge } from "./ui";
@@ -100,7 +101,7 @@ export function ConnectModal() {
   const devices = useDevices((s) => s.devices);
   const select = useDevices((s) => s.select);
   const toast = useUi((s) => s.toast);
-  const [tab, setTab] = useState<"usb" | "wireless" | "manual">("usb");
+  const [tab, setTab] = useState<"usb" | "wireless" | "qr" | "manual">("usb");
   const [ip, setIp] = useState("");
   const [pairPort, setPairPort] = useState("");
   const [code, setCode] = useState("");
@@ -139,9 +140,9 @@ export function ConnectModal() {
       <div className="panel-elevated dialog-enter w-[460px] max-w-full p-5" onClick={(e) => e.stopPropagation()}>
         <div className="text-[14.5px] font-semibold">Connect Device</div>
         <div className="flex gap-1 mt-3 p-1 rounded-[8px]" style={{ background: "#0b0f15", border: "1px solid var(--border)" }}>
-          {(["usb", "wireless", "manual"] as const).map((t) => (
-            <button key={t} onClick={() => setTab(t)} className={`flex-1 py-1.5 rounded-[6px] text-[12px] capitalize ${tab === t ? "bg-[#1a2231] text-white" : ""}`} style={tab !== t ? { color: "var(--text-secondary)" } : undefined}>
-              {t}
+          {(["usb", "wireless", "qr", "manual"] as const).map((t) => (
+            <button key={t} onClick={() => setTab(t)} className={`flex-1 py-1.5 rounded-[6px] text-[12px] ${t === "qr" ? "uppercase" : "capitalize"} ${tab === t ? "bg-[#1a2231] text-white" : ""}`} style={tab !== t ? { color: "var(--text-secondary)" } : undefined}>
+              {t === "qr" ? "QR" : t}
             </button>
           ))}
         </div>
@@ -175,6 +176,16 @@ export function ConnectModal() {
           </div>
         )}
 
+        {tab === "qr" && (
+          <QrScan
+            onDone={(msg) => {
+              toast("success", msg);
+              setOpen(false);
+            }}
+            onError={(msg) => toast("error", msg)}
+          />
+        )}
+
         {tab === "manual" && (
           <div className="mt-3 flex flex-col gap-2.5">
             <label className="text-[11.5px]" style={{ color: "var(--text-secondary)" }}>IP Address<input className="input mt-1 mono" value={ip} onChange={(e) => setIp(e.target.value)} placeholder="192.168.1.10" /></label>
@@ -186,6 +197,97 @@ export function ConnectModal() {
         <div className="flex justify-end mt-4">
           <button className="btn" onClick={() => setOpen(false)}>Close</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function QrScan({ onDone, onError }: { onDone: (msg: string) => void; onError: (msg: string) => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [status, setStatus] = useState("Starting camera…");
+
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let raf = 0;
+    let alive = true;
+    let working = false;
+    let last = 0;
+    const canvas = document.createElement("canvas");
+
+    (async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("no camera API");
+        }
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment", width: { ideal: 1280 } },
+          audio: false,
+        });
+        const v = videoRef.current;
+        if (!v) return;
+        v.srcObject = stream;
+        await v.play();
+        if (!alive) return;
+        setStatus("Point the camera at the QR code on your phone…");
+        const loop = async (t: number) => {
+          if (!alive) return;
+          if (t - last > 300 && v.videoWidth > 0 && !working) {
+            last = t;
+            canvas.width = v.videoWidth;
+            canvas.height = v.videoHeight;
+            const ctx = canvas.getContext("2d", { willReadFrequently: true });
+            if (ctx) {
+              ctx.drawImage(v, 0, 0);
+              const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const code = jsQR(img.data, canvas.width, canvas.height);
+              if (code?.data) {
+                working = true;
+                setStatus("QR found — pairing…");
+                try {
+                  const msg = await api.pairQr(code.data);
+                  onDone(msg);
+                  return;
+                } catch (e) {
+                  const m = e instanceof Error ? e.message : String(e);
+                  setErr(m);
+                  onError(`QR pairing failed: ${m}`);
+                  working = false;
+                }
+              }
+            }
+          }
+          raf = requestAnimationFrame(loop);
+        };
+        raf = requestAnimationFrame(loop);
+      } catch {
+        setErr("Camera unavailable — allow camera access, or use the pairing code instead.");
+        setStatus("Camera unavailable.");
+      }
+    })();
+
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      stream?.getTracks().forEach((t) => t.stop());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="mt-3 flex flex-col gap-2">
+      <div className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+        On your phone: Settings → Developer options → Wireless debugging →{" "}
+        <b>Pair device with QR code</b>. Keep phone and laptop on the same Wi-Fi.
+      </div>
+      <div className="rounded-[8px] overflow-hidden border" style={{ borderColor: "var(--border)", background: "#000" }}>
+        <video ref={videoRef} muted playsInline className="w-full max-h-[260px] object-cover" />
+      </div>
+      <div className="text-[11.5px]" style={{ color: err ? "var(--error)" : "var(--text-muted)" }}>
+        {err ?? status}
+      </div>
+      <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+        Camera frames are decoded locally — nothing is uploaded.
       </div>
     </div>
   );

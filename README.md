@@ -60,6 +60,10 @@ connected device; without them pages show setup/error states, never fake data.
 - **Pairing code**: Devices → Connect Device → Wireless tab. Enter IP + pairing port +
   pairing code from *Wireless debugging → Pair device with pairing code*.
   Note: the **pairing port and connection port are different**.
+- **QR code**: Connect Device → QR tab. Point the laptop camera at the QR shown by
+  *Wireless debugging → Pair device with QR code*. The app decodes it locally,
+  resolves the pairing service over mDNS, pairs, then auto-connects
+  (phone and laptop must share the same Wi-Fi; nothing is uploaded).
 - **Manual**: Manual tab → IP + ADB port (usually 5555) → Connect.
 - **QR pairing**: scan the QR from Wireless debugging with the in-app scanner.
   Camera frames are processed locally, never uploaded.

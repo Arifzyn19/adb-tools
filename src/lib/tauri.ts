@@ -93,6 +93,9 @@ export const api = {
   async pair(host: string, port: number, code: string): Promise<string> {
     return invokeTauri<string>("pair_device", { host, port, code });
   },
+  async pairQr(payload: string): Promise<string> {
+    return invokeTauri<string>("pair_qr", { payload });
+  },
   async connect(host: string, port: number): Promise<string> {
     return invokeTauri<string>("connect_device", { host, port });
   },
