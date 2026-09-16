@@ -7,177 +7,202 @@ import {
   MOCK_FILES, MOCK_MEMORY, MOCK_PROCESSES, MOCK_STORAGE,
 } from "../mock/data";
 
-let useMock = false;
-try {
-  // Web dev (no Tauri) or explicit mock env -> mock mode.
-  useMock =
-    typeof window !== "undefined" &&
-    (!(window as unknown as { __TAURI__?: unknown }).__TAURI__ ||
-      (window as unknown as { __ADB_MOCK__?: boolean }).__ADB_MOCK__ === true);
-} catch {
-  useMock = true;
+/**
+ * Tauri 2 does NOT inject `window.__TAURI__` unless `app.withGlobalTauri`
+ * is enabled. The reliable runtime marker is `__TAURI_INTERNALS__`,
+ * which the official `@tauri-apps/api` bridge always uses.
+ */
+export function isTauriRuntime(): boolean {
+  try {
+    return (
+      typeof window !== "undefined" &&
+      (window as unknown as { __TAURI_INTERNALS__?: unknown })
+        .__TAURI_INTERNALS__ != null
+    );
+  } catch {
+    return false;
+  }
 }
 
-async function tryInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
-  if (useMock) return null;
-  try {
-    const mod = await import("@tauri-apps/api/core");
-    return await mod.invoke<T>(cmd, args);
-  } catch {
-    useMock = true;
-    return null;
-  }
+async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const mod = await import("@tauri-apps/api/core");
+  // NOTE: command-level errors (Err from Rust) propagate to callers so the
+  // UI can show real error states instead of silently falling back to mock.
+  return mod.invoke<T>(cmd, args);
 }
 
 const delay = (ms = 120) => new Promise((r) => setTimeout(r, ms));
 
-export const api = {
-  isMock: () => useMock,
+type AdbStatusShape = { ready: boolean; version?: string | null; path?: string | null; mock: boolean };
 
-  async adbStatus() {
-    const r = await tryInvoke("adb_status");
-    if (r) return r as { ready: boolean; version?: string | null; path?: string | null; mock: boolean };
-    await delay();
-    return MOCK_ADB_STATUS;
+export const api = {
+  isMock: () => !isTauriRuntime(),
+
+  async adbStatus(): Promise<AdbStatusShape> {
+    if (!isTauriRuntime()) {
+      await delay();
+      return MOCK_ADB_STATUS;
+    }
+    return invokeTauri<AdbStatusShape>("adb_status");
   },
-  async adbDetect() {
-    const r = await tryInvoke("adb_detect");
-    if (r) return r as { ready: boolean; version?: string | null; path?: string | null; mock: boolean };
-    await delay(300);
-    return MOCK_ADB_STATUS;
+  async adbDetect(): Promise<AdbStatusShape> {
+    if (!isTauriRuntime()) {
+      await delay(300);
+      return MOCK_ADB_STATUS;
+    }
+    return invokeTauri<AdbStatusShape>("adb_detect");
   },
-  async adbSetPath(path: string) {
-    const r = await tryInvoke("adb_set_path", { path });
-    if (r) return r as { ready: boolean; version?: string | null; path?: string | null; mock: boolean };
-    await delay();
-    return { ...MOCK_ADB_STATUS, path };
+  async adbSetPath(path: string): Promise<AdbStatusShape> {
+    if (!isTauriRuntime()) {
+      await delay();
+      return { ...MOCK_ADB_STATUS, path };
+    }
+    return invokeTauri<AdbStatusShape>("adb_set_path", { path });
   },
 
   async listDevices(): Promise<DeviceInfo[]> {
-    const r = await tryInvoke<DeviceInfo[]>("list_devices");
-    if (r) return r;
-    await delay(250);
-    return MOCK_DEVICES;
+    if (!isTauriRuntime()) {
+      await delay(250);
+      return MOCK_DEVICES;
+    }
+    return invokeTauri<DeviceInfo[]>("list_devices");
   },
 
   async listApps(serial: string): Promise<AppInfo[]> {
-    const r = await tryInvoke<AppInfo[]>("list_apps", { serial });
-    if (r) return r;
-    await delay(350);
-    return MOCK_APPS;
+    if (!isTauriRuntime()) {
+      await delay(350);
+      return MOCK_APPS;
+    }
+    return invokeTauri<AppInfo[]>("list_apps", { serial });
   },
   async appAction(serial: string, pkg: string, action: string): Promise<string> {
-    const r = await tryInvoke<string>("app_action", { serial, package: pkg, action });
-    if (r) return r;
-    await delay(300);
-    return `${action} ok (mock)`;
+    if (!isTauriRuntime()) {
+      await delay(300);
+      return `${action} ok (mock)`;
+    }
+    return invokeTauri<string>("app_action", { serial, package: pkg, action });
   },
 
   async listProcesses(serial: string): Promise<ProcessInfo[]> {
-    const r = await tryInvoke<ProcessInfo[]>("list_processes", { serial });
-    if (r) return r;
-    await delay(300);
-    return MOCK_PROCESSES;
+    if (!isTauriRuntime()) {
+      await delay(300);
+      return MOCK_PROCESSES;
+    }
+    return invokeTauri<ProcessInfo[]>("list_processes", { serial });
   },
   async killProcess(serial: string, pid: number, pkg?: string | null): Promise<string> {
-    const r = await tryInvoke<string>("kill_process", { serial, pid, package: pkg ?? null });
-    if (r) return r;
-    await delay(200);
-    return "killed (mock)";
+    if (!isTauriRuntime()) {
+      await delay(200);
+      return "killed (mock)";
+    }
+    return invokeTauri<string>("kill_process", { serial, pid, package: pkg ?? null });
   },
 
   async shell(serial: string, line: string) {
-    const r = await tryInvoke<{ stdout: string; stderr: string; code?: number | null }>("shell_exec", { serial, line });
-    if (r) return r;
-    await delay(150);
-    return { stdout: `mock$ ${line}\n16\n`, stderr: "", code: 0 };
+    if (!isTauriRuntime()) {
+      await delay(150);
+      return { stdout: `mock$ ${line}\n16\n`, stderr: "", code: 0 };
+    }
+    return invokeTauri<{ stdout: string; stderr: string; code?: number | null }>("shell_exec", { serial, line });
   },
 
   async battery(serial: string): Promise<BatteryInfo> {
-    const r = await tryInvoke<BatteryInfo>("battery_info", { serial });
-    if (r) return r;
-    await delay(150);
-    return MOCK_BATTERY;
+    if (!isTauriRuntime()) {
+      await delay(150);
+      return MOCK_BATTERY;
+    }
+    return invokeTauri<BatteryInfo>("battery_info", { serial });
   },
   async memory(serial: string): Promise<MemoryInfo> {
-    const r = await tryInvoke<MemoryInfo>("memory_info", { serial });
-    if (r) return r;
-    await delay(150);
-    return MOCK_MEMORY;
+    if (!isTauriRuntime()) {
+      await delay(150);
+      return MOCK_MEMORY;
+    }
+    return invokeTauri<MemoryInfo>("memory_info", { serial });
   },
   async storage(serial: string, path: string): Promise<StorageInfo> {
-    const r = await tryInvoke<StorageInfo>("storage_info", { serial, path });
-    if (r) return r;
-    await delay(150);
-    return MOCK_STORAGE;
+    if (!isTauriRuntime()) {
+      await delay(150);
+      return MOCK_STORAGE;
+    }
+    return invokeTauri<StorageInfo>("storage_info", { serial, path });
   },
   async files(serial: string, path: string): Promise<FileEntry[]> {
-    const r = await tryInvoke<FileEntry[]>("list_files", { serial, path });
-    if (r) return r;
-    await delay(200);
-    return MOCK_FILES(path);
+    if (!isTauriRuntime()) {
+      await delay(200);
+      return MOCK_FILES(path);
+    }
+    return invokeTauri<FileEntry[]>("list_files", { serial, path });
   },
 
   async pair(host: string, port: number, code: string): Promise<string> {
-    const r = await tryInvoke<string>("pair_device", { host, port, code });
-    if (r) return r;
-    await delay(400);
-    return `Successfully paired to ${host}:${port} (mock)`;
+    if (!isTauriRuntime()) {
+      await delay(400);
+      return `Successfully paired to ${host}:${port} (mock)`;
+    }
+    return invokeTauri<string>("pair_device", { host, port, code });
   },
   async connect(host: string, port: number): Promise<string> {
-    const r = await tryInvoke<string>("connect_device", { host, port });
-    if (r) return r;
-    await delay(400);
-    return `already connected to ${host}:${port} (mock)`;
+    if (!isTauriRuntime()) {
+      await delay(400);
+      return `already connected to ${host}:${port} (mock)`;
+    }
+    return invokeTauri<string>("connect_device", { host, port });
   },
   async reboot(serial: string, mode: string): Promise<string> {
-    const r = await tryInvoke<string>("reboot_device", { serial, mode });
-    if (r) return r;
-    await delay(200);
-    return "Reboot command sent (mock)";
+    if (!isTauriRuntime()) {
+      await delay(200);
+      return "Reboot command sent (mock)";
+    }
+    return invokeTauri<string>("reboot_device", { serial, mode });
   },
   async installApk(serial: string, path: string, reinstall: boolean): Promise<string> {
-    const r = await tryInvoke<string>("install_apk", { serial, path, reinstall });
-    if (r) return r;
-    await delay(800);
-    return "Success (mock)";
+    if (!isTauriRuntime()) {
+      await delay(800);
+      return "Success (mock)";
+    }
+    return invokeTauri<string>("install_apk", { serial, path, reinstall });
   },
   async inspectApk(path: string): Promise<ApkMeta> {
-    const r = await tryInvoke<ApkMeta>("inspect_apk", { path });
-    if (r) return r;
-    await delay(300);
-    return {
-      file_name: path.split(/[\\/]/).pop() ?? "app.apk",
-      size_bytes: 24_582_144,
-      package: "com.example.app",
-      version: "2.4.1",
-      version_code: "241",
-      min_sdk: "26",
-      target_sdk: "34",
-      abis: ["arm64-v8a"],
-      permissions: ["android.permission.INTERNET", "android.permission.CAMERA"],
-      activities: [".MainActivity"],
-      services: [],
-      receivers: [],
-      providers: [],
-    };
+    if (!isTauriRuntime()) {
+      await delay(300);
+      return {
+        file_name: path.split(/[\\/]/).pop() ?? "app.apk",
+        size_bytes: 24_582_144,
+        package: "com.example.app",
+        version: "2.4.1",
+        version_code: "241",
+        min_sdk: "26",
+        target_sdk: "34",
+        abis: ["arm64-v8a"],
+        permissions: ["android.permission.INTERNET", "android.permission.CAMERA"],
+        activities: [".MainActivity"],
+        services: [],
+        receivers: [],
+        providers: [],
+      };
+    }
+    return invokeTauri<ApkMeta>("inspect_apk", { path });
   },
   async savedLoad(): Promise<SavedDevice[]> {
-    const r = await tryInvoke<SavedDevice[]>("saved_devices_load");
-    if (r) return r;
-    try {
-      const raw = localStorage.getItem("adb.savedDevices");
-      return raw ? (JSON.parse(raw) as SavedDevice[]) : [];
-    } catch {
-      return [];
+    if (!isTauriRuntime()) {
+      try {
+        const raw = localStorage.getItem("adb.savedDevices");
+        return raw ? (JSON.parse(raw) as SavedDevice[]) : [];
+      } catch {
+        return [];
+      }
     }
+    return invokeTauri<SavedDevice[]>("saved_devices_load");
   },
   async savedStore(devices: SavedDevice[]) {
-    const r = await tryInvoke("saved_devices_save", { devices });
-    if (r !== null) return;
-    try {
-      localStorage.setItem("adb.savedDevices", JSON.stringify(devices));
-    } catch { /* ignore */ }
+    if (!isTauriRuntime()) {
+      try {
+        localStorage.setItem("adb.savedDevices", JSON.stringify(devices));
+      } catch { /* ignore */ }
+      return;
+    }
+    await invokeTauri("saved_devices_save", { devices });
   },
 };
 

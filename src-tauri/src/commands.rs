@@ -124,29 +124,43 @@ pub async fn list_apps(serial: String, state: State<'_, AppState>) -> Result<Vec
     }
     let c = client_or_err(&state).await?;
     let pkgs = c.list_packages(&serial).await.map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
+    // Enrich versions concurrently (bounded) — sequential dumpsys for
+    // hundreds of packages would take a minute or more.
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+    let mut handles = Vec::new();
     for pkg in pkgs.into_iter().take(400) {
-        let (version, version_code) = c.package_version(&serial, &pkg).await;
-        let running = is_running_hint(&pkg);
-        out.push(AppInfo {
-            name: pretty_name(&pkg),
-            package: pkg.clone(),
-            version,
-            version_code,
-            uid: None,
-            install_type: if pkg.starts_with("com.android.") || pkg.starts_with("android") { "system".into() } else { "user".into() },
-            running,
-            system: pkg.starts_with("com.android."),
-        });
+        let cc = c.clone();
+        let ss = serial.clone();
+        let permit = sem.clone();
+        handles.push(tokio::spawn(async move {
+            let _guard = permit.acquire_owned().await.map_err(|e| e.to_string())?;
+            let (version, version_code) = cc.package_version(&ss, &pkg).await;
+            Ok::<AppInfo, String>(AppInfo {
+                name: pretty_name(&pkg),
+                package: pkg.clone(),
+                version,
+                version_code,
+                uid: None,
+                install_type: if pkg.starts_with("com.android.") || pkg.starts_with("android") { "system".into() } else { "user".into() },
+                running: false,
+                system: pkg.starts_with("com.android."),
+            })
+        }));
     }
+    let mut out = Vec::new();
+    for h in handles {
+        match h.await {
+            Ok(Ok(app)) => out.push(app),
+            Ok(Err(e)) => return Err(e),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    out.sort_by(|a, b| a.package.cmp(&b.package));
     Ok(out)
 }
 
 fn pretty_name(pkg: &str) -> String {
     pkg.rsplit('.').next().unwrap_or(pkg).to_string()
-}
-fn is_running_hint(_pkg: &str) -> bool {
-    false
 }
 
 #[tauri::command]
