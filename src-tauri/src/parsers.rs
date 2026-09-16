@@ -226,6 +226,39 @@ pub fn parse_logcat_threadtime(line: &str) -> Option<LogEntry> {
     })
 }
 
+/// Parse one logcat `brief` line (fallback when threadtime yields nothing):
+/// `I/ActivityManager( 1234): Start proc ...`
+pub fn parse_logcat_brief(line: &str) -> Option<LogEntry> {
+    let line = line.trim();
+    if line.len() < 5 {
+        return None;
+    }
+    let mut chars = line.chars();
+    let level_c = chars.next()?;
+    if chars.next()? != '/' {
+        return None;
+    }
+    let level = LogLevel::from_char(level_c)?;
+    let open = line.find('(')?;
+    let close = line[open..].find(')')? + open;
+    let tag = line[1..open].trim().to_string();
+    if tag.is_empty() {
+        return None;
+    }
+    let pid = line[open + 1..close].trim().parse().ok();
+    let after = line[close + 1..].trim_start();
+    let message = after.strip_prefix(':').map(|s| s.trim_start().to_string()).unwrap_or_else(|| after.to_string());
+    Some(LogEntry {
+        id: String::new(),
+        timestamp: String::new(),
+        level,
+        tag,
+        pid,
+        message,
+        package_hint: None,
+    })
+}
+
 /// Crash detection: returns (package, exception) if the line strongly indicates a crash.
 pub fn detect_crash_line(line: &str) -> Option<(String, String)> {
     if line.contains("FATAL EXCEPTION") {
@@ -435,6 +468,16 @@ mod tests {
         assert_eq!(e.level, LogLevel::I);
         assert_eq!(e.tag, "ActivityManager");
         assert_eq!(e.timestamp, "20:42:31");
+    }
+
+    #[test]
+    fn logcat_brief() {
+        let e = parse_logcat_brief("I/ActivityManager( 1234): Start proc com.example.app").unwrap();
+        assert_eq!(e.level, LogLevel::I);
+        assert_eq!(e.tag, "ActivityManager");
+        assert_eq!(e.pid, Some(1234));
+        assert!(parse_logcat_brief("not a log line").is_none());
+        assert!(parse_logcat_brief("09-15 20:42:31.123  x I NoParen: hi").is_none());
     }
 
     #[test]

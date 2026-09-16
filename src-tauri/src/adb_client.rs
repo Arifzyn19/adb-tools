@@ -374,15 +374,19 @@ impl AdbClient {
         if r.code.unwrap_or(1) != 0 && r.stdout.is_empty() {
             anyhow::bail!("{}", short_err(&r.stderr));
         }
-        Ok(r
+        let mut entries: Vec<LogEntry> = r
             .stdout
             .lines()
             .filter_map(parsers::parse_logcat_threadtime)
-            .map(|mut e| {
-                e.id = uuid::Uuid::new_v4().to_string();
-                e
-            })
-            .collect())
+            .collect();
+        // Fallback for ROMs/adb variants that don't honor -v threadtime.
+        if entries.is_empty() && !r.stdout.trim().is_empty() {
+            entries = r.stdout.lines().filter_map(parsers::parse_logcat_brief).collect();
+        }
+        for e in entries.iter_mut() {
+            e.id = uuid::Uuid::new_v4().to_string();
+        }
+        Ok(entries)
     }
 
     pub async fn clear_logcat(&self, serial: &str) -> Result<String> {

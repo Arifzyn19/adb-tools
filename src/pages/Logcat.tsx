@@ -58,6 +58,7 @@ export function Logcat() {
   const navigate = useNavigate();
   const parentRef = useRef<HTMLDivElement>(null);
   const [displayCount, setDisplayCount] = useState(600);
+  const [lastError, setLastError] = useState<string | null>(null);
   const seenRef = useRef<Set<string>>(new Set());
   const failRef = useRef(0);
 
@@ -72,6 +73,7 @@ export function Logcat() {
         const batch = await api.logcatDump(serial, 200);
         if (!alive) return;
         failRef.current = 0;
+        setLastError(null);
         const fresh = batch.filter((l) => {
           const k = logKey(l);
           if (seenRef.current.has(k)) return false;
@@ -93,10 +95,12 @@ export function Logcat() {
         }
       } catch (e) {
         if (!alive) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        setLastError(msg);
         failRef.current++;
         if (failRef.current >= 3) {
           setRunning(false);
-          toast("error", `Logcat stopped: ${e instanceof Error ? e.message : String(e)}`);
+          toast("error", `Logcat stopped: ${msg}`);
         }
       }
     };
@@ -194,8 +198,19 @@ export function Logcat() {
         {paused && <span className="chip" style={{ color: "var(--warning)" }}>Paused — stream continues, display frozen</span>}
       </div>
 
-      {!running && lines.length === 0 && (
+      {!running && lines.length === 0 && !lastError && (
         <EmptyState title="Waiting for Logcat…" desc="Press Start to begin streaming logs." action={<button className="btn btn-primary" onClick={() => setRunning(true)}>Start Logcat</button>} />
+      )}
+
+      {lastError && (
+        <div className="panel p-3.5 mb-2.5" style={{ borderColor: "rgba(255,92,104,0.4)" }}>
+          <div className="text-[12.5px] font-medium" style={{ color: "var(--error)" }}>Logcat error</div>
+          <div className="mono text-[11.5px] mt-1 break-all" style={{ color: "var(--text-secondary)" }}>{lastError}</div>
+          <div className="flex gap-2 mt-2.5">
+            <button className="btn" onClick={() => { failRef.current = 0; setLastError(null); setRunning(true); }}>Retry</button>
+            <button className="btn btn-ghost" onClick={() => setLastError(null)}>Dismiss</button>
+          </div>
+        </div>
       )}
 
       {(running || lines.length > 0) && (
