@@ -43,12 +43,7 @@ export function DeviceTools() {
   const screenshot = async () => {
     if (!selected) return;
     try {
-      if (api.isMock()) {
-        toast("success", "Screenshot captured (mock preview unavailable)");
-        return;
-      }
-      const { invoke } = await import("@tauri-apps/api/core");
-      const b64 = await invoke<string>("screenshot", { serial: selected.serial });
+      const b64 = await api.screenshot(selected.serial);
       setShot(b64);
       toast("success", "Screenshot captured");
     } catch (e) {

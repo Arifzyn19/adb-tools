@@ -31,7 +31,6 @@ export interface AdbStatus {
   ready: boolean;
   version?: string | null;
   path?: string | null;
-  mock: boolean;
 }
 
 export interface AppInfo {

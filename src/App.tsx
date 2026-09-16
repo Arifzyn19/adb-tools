@@ -27,7 +27,7 @@ function AppShell() {
   const setSaved = useDevices((s) => s.setSaved);
   const autoRefresh = useSettings((s) => s.autoRefresh);
   const navigate = useNavigate();
-  const [adb, setAdb] = useState<{ ready: boolean; version?: string | null; path?: string | null; mock: boolean }>({ ready: false, mock: false });
+  const [adb, setAdb] = useState<{ ready: boolean; version?: string | null; path?: string | null }>({ ready: false });
 
   const refresh = useCallback(async () => {
     setLoading(true);

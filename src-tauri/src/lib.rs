@@ -36,6 +36,8 @@ pub fn run() {
             commands::list_processes,
             commands::kill_process,
             commands::shell_exec,
+            commands::logcat_dump,
+            commands::logcat_clear,
             commands::battery_info,
             commands::memory_info,
             commands::storage_info,

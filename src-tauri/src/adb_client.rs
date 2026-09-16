@@ -26,10 +26,6 @@ impl AdbClient {
         Self { adb_path: path }
     }
 
-    pub fn mock_mode() -> bool {
-        std::env::var("ADB_MANAGER_MOCK").map(|v| v == "1").unwrap_or(false)
-    }
-
     async fn run(&self, args: &[&str], timeout_secs: u64) -> Result<ExecResult> {
         let mut cmd = Command::new(&self.adb_path);
         for a in args {
@@ -349,6 +345,31 @@ impl AdbClient {
             self.run_serial(serial, &["reboot", arg], 15).await?;
         }
         Ok(())
+    }
+
+    pub async fn logcat_dump(&self, serial: &str, tail: u32) -> Result<Vec<LogEntry>> {
+        let n = tail.clamp(1, 2000).to_string();
+        let r = self.run_serial(serial, &["logcat", "-v", "threadtime", "-d", "-t", &n], 20).await?;
+        if r.code.unwrap_or(1) != 0 && r.stdout.is_empty() {
+            anyhow::bail!("{}", short_err(&r.stderr));
+        }
+        Ok(r
+            .stdout
+            .lines()
+            .filter_map(parsers::parse_logcat_threadtime)
+            .map(|mut e| {
+                e.id = uuid::Uuid::new_v4().to_string();
+                e
+            })
+            .collect())
+    }
+
+    pub async fn clear_logcat(&self, serial: &str) -> Result<String> {
+        let r = self.run_serial(serial, &["logcat", "-c"], 10).await?;
+        if r.code.unwrap_or(1) != 0 {
+            anyhow::bail!("{}", short_err(&r.stderr));
+        }
+        Ok("Logcat cleared".to_string())
     }
 
     pub async fn shell_exec(&self, serial: &str, line: &str) -> Result<ExecResult> {

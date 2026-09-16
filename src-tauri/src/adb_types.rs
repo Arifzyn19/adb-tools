@@ -59,7 +59,6 @@ pub struct AdbStatus {
     pub ready: bool,
     pub version: Option<String>,
     pub path: Option<String>,
-    pub mock: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

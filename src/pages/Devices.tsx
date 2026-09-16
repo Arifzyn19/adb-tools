@@ -4,7 +4,7 @@ import { api } from "../lib/tauri";
 import { useDevices, useUi } from "../stores/stores";
 import { EmptyState, ErrorState, LoadingState, PageHeader, StatusBadge } from "../components/ui";
 
-export function Devices({ onRefresh, adb }: { onRefresh: () => void; adb: { ready: boolean; version?: string | null; path?: string | null; mock: boolean } }) {
+export function Devices({ onRefresh, adb }: { onRefresh: () => void; adb: { ready: boolean; version?: string | null; path?: string | null } }) {
   const devices = useDevices((s) => s.devices);
   const loading = useDevices((s) => s.loading);
   const error = useDevices((s) => s.error);

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCrashes, useDevices, useLogcat, useUi } from "../stores/stores";
-import { mockLogLine } from "../mock/data";
+import { api } from "../lib/tauri";
+import type { CrashInfo, LogEntry } from "../lib/types";
 import { EmptyState, PageHeader } from "../components/ui";
 
 const LEVELS = ["all", "V", "D", "I", "W", "E", "F"] as const;
@@ -11,8 +12,27 @@ const LEVEL_COLORS: Record<string, string> = {
   W: "var(--warning)", E: "var(--error)", F: "#ff2d55",
 };
 
-let mockTimer: ReturnType<typeof setInterval> | null = null;
-let mockIdx = 0;
+function logKey(l: LogEntry): string {
+  return `${l.timestamp}|${l.level}|${l.tag}|${l.pid ?? ""}|${l.message}`;
+}
+
+function toCrash(l: LogEntry): CrashInfo {
+  const pkg =
+    l.message.match(/[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+/i)?.[0] ??
+    l.package_hint ??
+    "unknown";
+  const exception =
+    l.message.match(/[A-Za-z0-9_.]*?(Exception|Error)/)?.[0] ?? "RuntimeException";
+  return {
+    id: `crash-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    package: pkg,
+    exception,
+    thread: "main",
+    timestamp: new Date().toLocaleString(),
+    location: null,
+    stacktrace: `${l.tag}: ${l.message}`,
+  };
+}
 
 export function Logcat() {
   const selected = useDevices((s) => s.selected)();
@@ -38,41 +58,55 @@ export function Logcat() {
   const navigate = useNavigate();
   const parentRef = useRef<HTMLDivElement>(null);
   const [displayCount, setDisplayCount] = useState(600);
+  const seenRef = useRef<Set<string>>(new Set());
+  const failRef = useRef(0);
 
-  // Mock streaming with batching: 25 lines per 300ms tick -> batched single state update.
+  // Real streaming via `adb logcat -d -t N` polling. The dump returns the
+  // tail of the device buffer each tick, so dedup by content key.
   useEffect(() => {
-    if (!running || paused) {
-      if (mockTimer) {
-        clearInterval(mockTimer);
-        mockTimer = null;
-      }
-      return;
-    }
-    mockTimer = setInterval(() => {
-      const batch = Array.from({ length: 25 }, () => mockLogLine(mockIdx++));
-      pushBatch(batch);
-      // Crash detection on batch (no per-line state churn).
-      for (const l of batch) {
-        if (l.message.includes("FATAL EXCEPTION")) {
-          const crash = {
-            id: `crash-${Date.now()}`,
-            package: l.package_hint ?? "com.example.app",
-            exception: "NullPointerException",
-            thread: "main",
-            timestamp: new Date().toLocaleString(),
-            location: "MainActivity.kt:142",
-            stacktrace: `${l.tag}: FATAL EXCEPTION: main\nProcess: ${l.package_hint ?? "com.example.app"}\njava.lang.NullPointerException\n\tat MainActivity.kt:142\n\tat android.app.Activity.performCreate(Activity.java:9000)`,
-          };
-          addCrash(crash);
-          toast("error", `Crash Detected — ${crash.package} · NullPointerException · Thread: main`);
+    if (!running || paused || !selected) return;
+    let alive = true;
+    const serial = selected.serial;
+    const tick = async () => {
+      try {
+        const batch = await api.logcatDump(serial, 200);
+        if (!alive) return;
+        failRef.current = 0;
+        const fresh = batch.filter((l) => {
+          const k = logKey(l);
+          if (seenRef.current.has(k)) return false;
+          seenRef.current.add(k);
+          return true;
+        });
+        if (seenRef.current.size > 3000) {
+          seenRef.current = new Set(Array.from(seenRef.current).slice(-1500));
+        }
+        if (fresh.length > 0) {
+          pushBatch(fresh);
+          for (const l of fresh) {
+            if (l.message.includes("FATAL EXCEPTION")) {
+              const crash = toCrash(l);
+              addCrash(crash);
+              toast("error", `Crash Detected — ${crash.package} · ${crash.exception}`);
+            }
+          }
+        }
+      } catch (e) {
+        if (!alive) return;
+        failRef.current++;
+        if (failRef.current >= 3) {
+          setRunning(false);
+          toast("error", `Logcat stopped: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
-    }, 300);
-    return () => {
-      if (mockTimer) clearInterval(mockTimer);
-      mockTimer = null;
     };
-  }, [running, paused, pushBatch, addCrash, toast]);
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [running, paused, selected?.serial, pushBatch, addCrash, toast, setRunning]);
 
   // Auto-scroll to bottom on new batches.
   useEffect(() => {
@@ -99,6 +133,18 @@ export function Logcat() {
     estimateSize: () => 26,
     overscan: 20,
   });
+
+  const doClear = async () => {
+    clear();
+    seenRef.current = new Set();
+    if (selected) {
+      try {
+        await api.logcatClear(selected.serial);
+      } catch (e) {
+        toast("error", `Clear failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  };
 
   const exportLogs = () => {
     const text = filtered.map((l) => `${l.timestamp} ${l.level} ${l.tag}: ${l.message}`).join("\n");
@@ -131,7 +177,7 @@ export function Logcat() {
               ? <button className="btn btn-primary" onClick={() => setRunning(true)}>Start</button>
               : <button className="btn" onClick={() => setRunning(false)}>Stop</button>}
             <button className="btn" onClick={() => setPaused(!paused)}>{paused ? "Resume" : "Pause"}</button>
-            <button className="btn" onClick={clear}>Clear</button>
+            <button className="btn" onClick={doClear}>Clear</button>
             <button className="btn" onClick={exportLogs}>Export</button>
           </>
         }

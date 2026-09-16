@@ -55,13 +55,9 @@ export function CommandPalette() {
         return;
       }
       try {
-        if (api.isMock()) {
-          toast("success", "Screenshot captured (mock)");
-        } else {
-          const core = await import("@tauri-apps/api/core");
-          await core.invoke<string>("screenshot", { serial: selected.serial });
-          toast("success", "Screenshot captured");
-        }
+        const core = await import("@tauri-apps/api/core");
+        await core.invoke<string>("screenshot", { serial: selected.serial });
+        toast("success", "Screenshot captured");
       } catch (e) {
         toast("error", `Screenshot failed: ${String(e)}`);
       }

@@ -2,15 +2,12 @@
 
 use crate::adb_client::{discover_adb, AdbClient};
 use crate::adb_types::*;
-use crate::state::{mock_apps, mock_devices, mock_processes, AppState};
+use crate::state::AppState;
 use anyhow::Result;
 use std::path::PathBuf;
 use tauri::State;
 
 async fn client_or_err(state: &State<'_, AppState>) -> Result<AdbClient, String> {
-    if AppState::mock_mode() {
-        return Err("MOCK_MODE".to_string());
-    }
     let guard = state.adb_path.lock().await;
     match guard.clone() {
         Some(p) => Ok(AdbClient::new(p)),
@@ -20,19 +17,16 @@ async fn client_or_err(state: &State<'_, AppState>) -> Result<AdbClient, String>
 
 #[tauri::command]
 pub async fn adb_status(state: State<'_, AppState>) -> Result<AdbStatus, String> {
-    if AppState::mock_mode() {
-        return Ok(AdbStatus { ready: true, version: Some("1.0.41 (mock)".into()), path: Some("mock/adb".into()), mock: true });
-    }
     let guard = state.adb_path.lock().await;
     match guard.clone() {
         Some(p) => {
             let c = AdbClient::new(p.clone());
             match c.version().await {
-                Ok(v) => Ok(AdbStatus { ready: true, version: Some(v), path: Some(p.to_string_lossy().to_string()), mock: false }),
-                Err(_) => Ok(AdbStatus { ready: false, version: None, path: Some(p.to_string_lossy().to_string()), mock: false }),
+                Ok(v) => Ok(AdbStatus { ready: true, version: Some(v), path: Some(p.to_string_lossy().to_string()) }),
+                Err(_) => Ok(AdbStatus { ready: false, version: None, path: Some(p.to_string_lossy().to_string()) }),
             }
         }
-        None => Ok(AdbStatus { ready: false, version: None, path: None, mock: false }),
+        None => Ok(AdbStatus { ready: false, version: None, path: None }),
     }
 }
 
@@ -61,15 +55,12 @@ pub async fn adb_set_path(path: String, state: State<'_, AppState>) -> Result<Ad
 
 #[tauri::command]
 pub async fn adb_test(state: State<'_, AppState>) -> Result<String, String> {
-    let c = client_or_err(&state).await.map_err(|e| if e == "MOCK_MODE" { "mock-ok".to_string() } else { e })?;
+    let c = client_or_err(&state).await?;
     c.version().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn list_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    if AppState::mock_mode() {
-        return Ok(mock_devices());
-    }
     let c = client_or_err(&state).await?;
     let mut devices = c.devices().await.map_err(|e| e.to_string())?;
     for d in devices.iter_mut() {
@@ -80,11 +71,8 @@ pub async fn list_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>,
 
 #[tauri::command]
 pub async fn device_details(serial: String, state: State<'_, AppState>) -> Result<DeviceInfo, String> {
-    if AppState::mock_mode() {
-        return mock_devices().into_iter().find(|d| d.serial == serial).ok_or_else(|| "device not found".to_string());
-    }
     let c = client_or_err(&state).await?;
-    let mut devices = c.devices().await.map_err(|e| e.to_string())?;
+    let devices = c.devices().await.map_err(|e| e.to_string())?;
     let mut found = devices.into_iter().find(|d| d.serial == serial).ok_or_else(|| "device not found".to_string())?;
     c.enrich_device(&mut found).await.map_err(|e| e.to_string())?;
     Ok(found)
@@ -92,36 +80,24 @@ pub async fn device_details(serial: String, state: State<'_, AppState>) -> Resul
 
 #[tauri::command]
 pub async fn pair_device(host: String, port: u16, code: String, state: State<'_, AppState>) -> Result<String, String> {
-    if AppState::mock_mode() {
-        return Ok(format!("Successfully paired to {host}:{port} (mock)"));
-    }
     let c = client_or_err(&state).await?;
     c.pair(&host, port, &code).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn connect_device(host: String, port: u16, state: State<'_, AppState>) -> Result<String, String> {
-    if AppState::mock_mode() {
-        return Ok(format!("already connected to {host}:{port} (mock)"));
-    }
     let c = client_or_err(&state).await?;
     c.connect(&host, port).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn disconnect_device(serial: String, state: State<'_, AppState>) -> Result<String, String> {
-    if AppState::mock_mode() {
-        return Ok("disconnected (mock)".to_string());
-    }
     let c = client_or_err(&state).await?;
     c.disconnect(&serial).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn list_apps(serial: String, state: State<'_, AppState>) -> Result<Vec<AppInfo>, String> {
-    if AppState::mock_mode() {
-        return Ok(mock_apps());
-    }
     let c = client_or_err(&state).await?;
     let pkgs = c.list_packages(&serial).await.map_err(|e| e.to_string())?;
     // Enrich versions concurrently (bounded) — sequential dumpsys for
@@ -165,9 +141,6 @@ fn pretty_name(pkg: &str) -> String {
 
 #[tauri::command]
 pub async fn app_action(serial: String, package: String, action: String, state: State<'_, AppState>) -> Result<String, String> {
-    if AppState::mock_mode() {
-        return Ok(format!("{action} ok (mock)"));
-    }
     let c = client_or_err(&state).await?;
     match action.as_str() {
         "launch" => c.launch(&serial, &package).await.map_err(|e| e.to_string()),
@@ -180,18 +153,12 @@ pub async fn app_action(serial: String, package: String, action: String, state: 
 
 #[tauri::command]
 pub async fn list_processes(serial: String, state: State<'_, AppState>) -> Result<Vec<ProcessInfo>, String> {
-    if AppState::mock_mode() {
-        return Ok(mock_processes());
-    }
     let c = client_or_err(&state).await?;
     c.list_processes(&serial).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn kill_process(serial: String, pid: u32, package: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
-    if AppState::mock_mode() {
-        return Ok("killed (mock)".into());
-    }
     let c = client_or_err(&state).await?;
     if let Some(pkg) = package {
         if !pkg.is_empty() {
@@ -203,9 +170,6 @@ pub async fn kill_process(serial: String, pid: u32, package: Option<String>, sta
 
 #[tauri::command]
 pub async fn shell_exec(serial: String, line: String, state: State<'_, AppState>) -> Result<ExecOut, String> {
-    if AppState::mock_mode() {
-        return Ok(ExecOut { stdout: format!("mock output for: {line}\n"), stderr: String::new(), code: Some(0) });
-    }
     let c = client_or_err(&state).await?;
     c.shell_exec(&serial, &line).await.map(|r| ExecOut { stdout: r.stdout, stderr: r.stderr, code: r.code }).map_err(|e| e.to_string())
 }
@@ -218,28 +182,31 @@ pub struct ExecOut {
 }
 
 #[tauri::command]
+pub async fn logcat_dump(serial: String, tail: u32, state: State<'_, AppState>) -> Result<Vec<LogEntry>, String> {
+    let c = client_or_err(&state).await?;
+    c.logcat_dump(&serial, tail).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn logcat_clear(serial: String, state: State<'_, AppState>) -> Result<String, String> {
+    let c = client_or_err(&state).await?;
+    c.clear_logcat(&serial).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn battery_info(serial: String, state: State<'_, AppState>) -> Result<BatteryInfo, String> {
-    if AppState::mock_mode() {
-        return Ok(BatteryInfo { pct: Some(78), charging: Some(true), health: Some("Good".into()), temperature_c: Some(31.0), voltage_mv: Some(4100), technology: Some("Li-ion".into()) });
-    }
     let c = client_or_err(&state).await?;
     c.battery(&serial).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn memory_info(serial: String, state: State<'_, AppState>) -> Result<MemoryInfo, String> {
-    if AppState::mock_mode() {
-        return Ok(MemoryInfo { total_kb: Some(11560104), avail_kb: Some(7654321) });
-    }
     let c = client_or_err(&state).await?;
     c.meminfo(&serial).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn storage_info(serial: String, path: String, state: State<'_, AppState>) -> Result<StorageInfo, String> {
-    if AppState::mock_mode() {
-        return Ok(StorageInfo { total_kb: Some(118000000), used_kb: Some(84000000), avail_kb: Some(34000000), path });
-    }
     let c = client_or_err(&state).await?;
     let p = if path.is_empty() { "/data" } else { &path };
     c.storage(&serial, p).await.map_err(|e| e.to_string())
@@ -247,12 +214,6 @@ pub async fn storage_info(serial: String, path: String, state: State<'_, AppStat
 
 #[tauri::command]
 pub async fn list_files(serial: String, path: String, state: State<'_, AppState>) -> Result<Vec<FileEntry>, String> {
-    if AppState::mock_mode() {
-        return Ok(vec![
-            FileEntry { name: "DCIM".into(), path: format!("{path}/DCIM"), is_dir: true, size: 0, modified: Some("2024-05-01 10:00".into()) },
-            FileEntry { name: "photo.jpg".into(), path: format!("{path}/photo.jpg"), is_dir: false, size: 2411723, modified: Some("2024-05-02 12:30".into()) },
-        ]);
-    }
     let c = client_or_err(&state).await?;
     let p = if path.is_empty() { "/storage/emulated/0" } else { &path };
     c.list_files(&serial, p).await.map_err(|e| e.to_string())
@@ -261,9 +222,6 @@ pub async fn list_files(serial: String, path: String, state: State<'_, AppState>
 #[tauri::command]
 pub async fn screenshot(serial: String, state: State<'_, AppState>) -> Result<String, String> {
     // Returns base64 PNG.
-    if AppState::mock_mode() {
-        return Ok(String::new());
-    }
     let c = client_or_err(&state).await?;
     let bytes = c.screenshot_raw(&serial).await.map_err(|e| e.to_string())?;
     Ok(base64_encode(&bytes))
@@ -287,18 +245,12 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 #[tauri::command]
 pub async fn reboot_device(serial: String, mode: String, state: State<'_, AppState>) -> Result<String, String> {
-    if AppState::mock_mode() {
-        return Ok("rebooting (mock)".into());
-    }
     let c = client_or_err(&state).await?;
     c.reboot(&serial, &mode).await.map(|_| "Reboot command sent".into()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn install_apk(serial: String, path: String, reinstall: bool, state: State<'_, AppState>) -> Result<String, String> {
-    if AppState::mock_mode() {
-        return Ok("Success (mock)".into());
-    }
     let c = client_or_err(&state).await?;
     c.install(&serial, &PathBuf::from(path), reinstall).await.map_err(|e| e.to_string())
 }
@@ -308,8 +260,8 @@ pub async fn inspect_apk(path: String) -> Result<ApkMeta, String> {
     let pb = PathBuf::from(&path);
     let data = std::fs::read(&pb).map_err(|e| e.to_string())?;
     let size = data.len() as u64;
-    // Lightweight: parse AndroidManifest.xml binary? Full AAPT not available.
-    // We scan zip entries for names + manifest text fallback.
+    // Lightweight: scan zip entries for names + ABI folders.
+    // Full binary AndroidManifest parsing requires aapt2 — reported honestly.
     let reader = std::io::Cursor::new(data);
     let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
     let mut names: Vec<String> = Vec::new();
@@ -318,7 +270,6 @@ pub async fn inspect_apk(path: String) -> Result<ApkMeta, String> {
             names.push(f.name().to_string());
         }
     }
-    let _has_manifest = names.iter().any(|n| n == "AndroidManifest.xml");
     Ok(ApkMeta {
         file_name: pb.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
         size_bytes: size,
@@ -343,7 +294,6 @@ fn detect_abis(names: &[String]) -> Vec<String> {
             abis.push(abi.to_string());
         }
     }
-    let _ = names.len();
     abis
 }
 

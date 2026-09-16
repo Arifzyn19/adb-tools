@@ -3,7 +3,7 @@ import { api } from "../lib/tauri";
 import { useLogcat, useSettings, useUi } from "../stores/stores";
 import { PageHeader } from "../components/ui";
 
-export function SettingsPage({ adb, onRefresh }: { adb: { ready: boolean; version?: string | null; path?: string | null; mock: boolean }; onRefresh: () => void }) {
+export function SettingsPage({ adb, onRefresh }: { adb: { ready: boolean; version?: string | null; path?: string | null }; onRefresh: () => void }) {
   const s = useSettings();
   const toast = useUi((s) => s.toast);
   const setMaxBuffer = useLogcat((st) => st.setMaxBuffer);
@@ -56,7 +56,7 @@ export function SettingsPage({ adb, onRefresh }: { adb: { ready: boolean; versio
             <input className="input mono" placeholder="C:\Android\platform-tools\adb.exe" value={path} onChange={(e) => setPath(e.target.value)} />
             <button className="btn btn-primary shrink-0" disabled={testing} onClick={test}>{testing ? "Testing…" : "Detect / Test"}</button>
           </div>
-          <div className="mono text-[11px] mt-2 truncate" style={{ color: "var(--text-muted)" }}>Current: {adb.path ?? "not configured"}{adb.mock ? " (mock mode — set ADB_MANAGER_MOCK=0 with real adb)" : ""}</div>
+          <div className="mono text-[11px] mt-2 truncate" style={{ color: "var(--text-muted)" }}>Current: {adb.path ?? "not configured"}</div>
         </div>
 
         <div className="panel p-4">

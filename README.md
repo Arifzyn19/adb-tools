@@ -39,13 +39,12 @@ npm install
 ## Development
 
 ```bash
-npm run dev          # browser dev (mock data, no Tauri)
+npm run dev          # browser preview (calls fail without Tauri runtime — use the desktop app)
 npm run tauri dev    # full desktop dev (needs @tauri-apps/cli + Rust)
 ```
 
-Mock mode: the UI is fully testable without a device. In the browser there is no
-`window.__TAURI__`, so the frontend automatically falls back to mock data.
-With the real backend, set `ADB_MANAGER_MOCK=1` for mocked Rust responses.
+All data is real — there is no mock mode. The app requires `adb.exe` and a
+connected device; without them pages show setup/error states, never fake data.
 
 ## ADB Setup
 
